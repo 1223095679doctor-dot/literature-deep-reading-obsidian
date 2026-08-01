@@ -39,6 +39,17 @@ TABLE_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 TERM_SECTION = re.compile(
     r"^#\s+阅读前置｜重点名词、缩写与核心概念\s*$([\s\S]*?)(?=^#\s+一、)", re.M
 )
+META_STAGE_CLICHES = (
+    "本阶段必须回答的问题来自前一步仍然不够的证据",
+    "作者的解决思路是把该缺口拆成相互补充的实验任务",
+    "以下先写实验设计与报告完整性",
+    "阶段性评价将明确证据等级",
+    "最有判别力的下一步实验之后，再说明结果怎样推动到下一阶段",
+)
+FIGURE_FILLER = re.compile(
+    r"见图及图注|见原图(?:及图注)?|本行按对应面板读取|详见(?:原文|论文|图注)|如图所示|\|\s*同上\s*\|",
+    re.I,
+)
 
 
 def chineseish_count(text: str) -> int:
@@ -145,6 +156,15 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
             errors.append(f"发现临时/禁止文件：{p.relative_to(root)}")
 
     if text:
+        for phrase in META_STAGE_CLICHES:
+            count = text.count(phrase)
+            if count:
+                errors.append(f"检测到阶段元叙述/模板套话 {count} 次：{phrase}")
+        filler_matches = list(FIGURE_FILLER.finditer(text))
+        if filler_matches:
+            examples = sorted({match.group(0) for match in filler_matches})[:4]
+            errors.append(f"逐图/正文含无信息占位 {len(filler_matches)} 处：{'、'.join(examples)}")
+
         if BARE_CALLOUT.search(text):
             for match in BARE_CALLOUT.finditer(text):
                 line_no = text.count("\n", 0, match.start()) + 1
@@ -211,6 +231,9 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
             bridge_count = len(re.findall(r"前一步|上一.*证据|承接|仍不能|仍然不够|由此|因此.*下一|推动.*下一", stage_body))
             if bridge_count < 3:
                 warnings.append(f"阶段内部递进连接偏少：{stage_name}（识别到 {bridge_count} 个缺口/推进桥）")
+            opening = prose_only(stage_body)[:900]
+            if re.search(r"阶段性评价|证据等级|当前能支持|当前不能支持|设计优点|设计缺点", opening):
+                warnings.append(f"阶段开头疑似先批判后引题：{stage_name}")
             if prose_chars < 1200 and figure_links >= 1:
                 warnings.append(
                     f"阶段正文可能被图片/表格替代：{stage_name}（纯叙述约 {prose_chars} 字符，图片 {figure_links} 张）"
@@ -221,6 +244,19 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
                 )
             if figure_links >= 2 and number_signals == 0:
                 warnings.append(f"阶段缺少可识别定量信号：{stage_name}")
+
+        repeated_stage_paragraphs: dict[str, list[str]] = {}
+        for stage_name, stage_body in section_spans(text, STAGE_HEADING):
+            for paragraph in re.split(r"\n\s*\n", prose_only(stage_body)):
+                normalized = re.sub(r"\s+", "", paragraph)
+                if len(normalized) >= 120:
+                    repeated_stage_paragraphs.setdefault(normalized, []).append(stage_name)
+        for paragraph, stages in repeated_stage_paragraphs.items():
+            unique_stages = list(dict.fromkeys(stages))
+            if len(unique_stages) >= 2:
+                errors.append(
+                    f"多个阶段复制同一长段，疑似模板污染：{'；'.join(unique_stages)}（段首：{paragraph[:45]}…）"
+                )
 
         consecutive_images = 0
         max_consecutive_images = 0
