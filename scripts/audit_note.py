@@ -79,6 +79,32 @@ def prose_only(text: str) -> str:
     return "\n".join(kept)
 
 
+def narrative_only(text: str) -> str:
+    """Keep reader-facing paragraphs; exclude tables, headings, images, code and callouts."""
+    kept: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or not stripped:
+            continue
+        if stripped.startswith(("#", "|", ">")) or IMAGE_ONLY_LINE.match(line):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def h1_section(text: str, title_pattern: str) -> str | None:
+    match = re.search(rf"^#\s+.*(?:{title_pattern}).*$", text, re.M | re.I)
+    if not match:
+        return None
+    next_h1 = re.search(r"^#\s+", text[match.end():], re.M)
+    end = match.end() + next_h1.start() if next_h1 else len(text)
+    return text[match.end():end]
+
+
 def section_spans(text: str, pattern: re.Pattern[str]) -> list[tuple[str, str]]:
     matches = list(pattern.finditer(text))
     result: list[tuple[str, str]] = []
@@ -389,6 +415,53 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
                     warnings.append(f"重点名词“在本文中的作用”过短：{term}")
         else:
             warnings.append("未识别到重点名词模块")
+
+        competition = h1_section(text, r"竞争性?解释|双向压力测试|压力测试")
+        if competition is None:
+            errors.append("未识别到竞争解释与压力测试章节")
+        else:
+            competition_chars = chineseish_count(narrative_only(competition))
+            if competition_chars < 1000:
+                errors.append(
+                    f"竞争解释与压力测试深度不足：有效叙述约 {competition_chars} 字符（至少 1000，不计表格/Callout）"
+                )
+            competition_models = len(re.findall(r"竞争模型\s*[一二三四五六七八九十\d]+", competition))
+            if competition_models < 1:
+                errors.append("竞争解释章节没有可识别的具体竞争模型")
+            elif competition_models < 2:
+                warnings.append("仅识别到一个竞争模型；复杂论文通常至少需要两个实质模型")
+            competition_requirements = {
+                "解释多项现有结果": r"能解释哪些现有结果|同时解释|解释.*结果",
+                "模型解释失败处": r"无法解释|解释不了",
+                "差异预测": r"真正能区分|特异预测|不同预测|差异预测",
+                "A/B双向判定": r"结果\s*A|结果A.*结果B|结果\s*B",
+                "机制失败后的剩余贡献": r"最小可发表故事|即使.*失败|还剩下什么",
+            }
+            for label, pattern in competition_requirements.items():
+                if not re.search(pattern, competition, re.I | re.S):
+                    errors.append(f"竞争解释章节缺少：{label}")
+
+        final_review = h1_section(text, r"最终复盘")
+        if final_review is None:
+            errors.append("未识别到最终复盘章节")
+        else:
+            final_chars = chineseish_count(narrative_only(final_review))
+            if final_chars < 800:
+                errors.append(
+                    f"最终复盘深度不足：有效叙述约 {final_chars} 字符（至少 800，不计表格/Callout）"
+                )
+            final_requirements = {
+                "稳健核心": r"稳健核心|即使.*错误.*仍.*成立",
+                "条件性结论": r"条件性结论|依赖.*前提",
+                "脆弱机制": r"脆弱机制|分叉实验.*失败",
+                "未建立外推": r"未建立外推|未直接检验.*外推",
+                "真正完成了什么": r"真正完成了什么|论文真正完成|已完成",
+                "尚未证明什么": r"尚未证明|还没有证明|论文还没有证明|未完成",
+                "关键因果断点": r"关键.*因果断点|最关键.*因果",
+            }
+            for label, pattern in final_requirements.items():
+                if not re.search(pattern, final_review, re.I | re.S):
+                    errors.append(f"最终复盘缺少：{label}")
 
         supplementary_figures = len(re.findall(r"!\[\[Figure/Figure\s+S\d+[^\]]*\]\]", text, re.I))
         supplementary_mentions = len(re.findall(r"Figure\s+S\d+", text, re.I))
