@@ -1,0 +1,4 @@
+interface:
+  display_name: "文献精读与证据审查"
+  short_description: "生成接近优秀范例深度的 Obsidian 文献精读与证据审查成品"
+  default_prompt: "使用 $literature-deep-reading-obsidian 完整读取论文正文与 SI，生成经过证据审查的 Obsidian 文献精读笔记。"
