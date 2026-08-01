@@ -50,6 +50,10 @@ FIGURE_FILLER = re.compile(
     r"见图及图注|见原图(?:及图注)?|本行按对应面板读取|详见(?:原文|论文|图注)|如图所示|\|\s*同上\s*\|",
     re.I,
 )
+PANEL_GROUP = re.compile(r"^(?:[A-Za-z]\d?)\s*(?:[–—-]|/|、|,|，|及)\s*(?:[A-Za-z]\d?)", re.I)
+FUNCTIONAL_STAGE_TITLE = re.compile(
+    r"前一步|必须回答|实验拆解|作者为什么安排|预期结果|失败结果|实际观察|作者.*推理|阶段性评价|下一步实验|推动到下一阶段"
+)
 
 
 def chineseish_count(text: str) -> int:
@@ -173,6 +177,23 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
         for issue in audit_markdown_tables(text):
             errors.append("Markdown 表格格式错误：" + issue)
 
+        grouped_panels: list[str] = []
+        for line in text.splitlines():
+            cells = table_cells(line)
+            if not cells or all(TABLE_SEPARATOR_CELL.match(cell) for cell in cells):
+                continue
+            first = re.sub(r"[*`]", "", cells[0]).strip()
+            if PANEL_GROUP.match(first) or first in {"全部面板", "所有面板", "全图"}:
+                grouped_panels.append(first)
+            elif re.match(r"^Figure\s+S?\d+", first, re.I) and len(cells) > 1:
+                second = re.sub(r"[*`]", "", cells[1]).strip()
+                if re.search(r"(?:^|[；;])\s*[A-Za-z]\d?\s*(?:[–—-]|/|、|,|，|及)\s*[A-Za-z]\d?", second):
+                    grouped_panels.append(f"{first}: {second[:35]}")
+        if grouped_panels:
+            errors.append(
+                f"逐面板表存在 {len(grouped_panels)} 个合并行，必须一面板一行：{'；'.join(grouped_panels[:8])}"
+            )
+
         headings = list(HEADING.finditer(text))
         for index, match in enumerate(headings):
             start = match.end()
@@ -235,12 +256,16 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
             if re.search(r"阶段性评价|证据等级|当前能支持|当前不能支持|设计优点|设计缺点", opening):
                 warnings.append(f"阶段开头疑似先批判后引题：{stage_name}")
             if prose_chars < 1200 and figure_links >= 1:
-                warnings.append(
-                    f"阶段正文可能被图片/表格替代：{stage_name}（纯叙述约 {prose_chars} 字符，图片 {figure_links} 张）"
+                errors.append(
+                    f"阶段分析正文严重不足：{stage_name}（有效叙述约 {prose_chars} 字符，图片 {figure_links} 张）"
                 )
             elif prose_chars < 2000 and figure_links >= 2:
+                errors.append(
+                    f"核心阶段未达到深度下限：{stage_name}（有效叙述约 {prose_chars} 字符，图片 {figure_links} 张；至少 2000）"
+                )
+            elif prose_chars < 3000 and figure_links >= 4:
                 warnings.append(
-                    f"复杂阶段可能过薄：{stage_name}（纯叙述约 {prose_chars} 字符，图片 {figure_links} 张）"
+                    f"复杂承重阶段仍可能偏薄：{stage_name}（有效叙述约 {prose_chars} 字符，图片 {figure_links} 张）"
                 )
             if figure_links >= 2 and number_signals == 0:
                 warnings.append(f"阶段缺少可识别定量信号：{stage_name}")
@@ -306,12 +331,23 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
                     errors.append(f"Figure 缺少独立 take-home message：{name}")
 
         inspiration_match = re.search(
-            r"^##\s+1\.2\s+灵感是怎样逐层形成的\s*$([\s\S]*?)(?=^##\s+1\.[3-9]|^#\s+)",
+            r"^##\s+1\.2\s+.*灵感.*$([\s\S]*?)(?=^##\s+1\.[3-9]|^#\s+)",
             text,
             re.M,
         )
         if inspiration_match:
             inspiration = inspiration_match.group(1)
+            inspiration_prose = chineseish_count(prose_only(inspiration))
+            point_pattern = re.compile(r"^###\s+(.+?)\s*$", re.M)
+            inspiration_points = section_spans(inspiration, point_pattern)
+            if len(inspiration_points) >= 3 and inspiration_prose < 1200:
+                errors.append(
+                    f"灵感部分分析深度不足：{len(inspiration_points)} 个灵感点仅约 {inspiration_prose} 个有效叙述字符（至少 1200）"
+                )
+            for point_name, point_body in inspiration_points:
+                point_chars = chineseish_count(prose_only(point_body))
+                if point_chars < 220:
+                    errors.append(f"灵感点展开不足：{point_name}（有效叙述约 {point_chars} 字符；至少 220）")
             design_signals = len(
                 re.findall(r"为什么会想到|已知线索|构思来源|设计要求|设计约束|单靠.*不够|为什么.*不够", inspiration)
             )
@@ -320,7 +356,17 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
             if len(re.findall(r"Figure\s+S?\d+|Fig\.\s*S?\d+", inspiration, re.I)) >= 3:
                 warnings.append("灵感部分频繁引用 Figure，可能把 Results 路线误写成构思来源")
         else:
-            warnings.append("未识别到“1.2 灵感是怎样逐层形成的”部分")
+            warnings.append("未识别到 1.2 灵感形成部分")
+
+        for match_index, heading_match in enumerate(headings):
+            title = heading_match.group(2)
+            if not FUNCTIONAL_STAGE_TITLE.search(title):
+                continue
+            start = heading_match.end()
+            end = headings[match_index + 1].start() if match_index + 1 < len(headings) else len(text)
+            body_chars = chineseish_count(prose_only(text[start:end]))
+            if body_chars < 180:
+                errors.append(f"阶段功能小节只有摘要、缺少分析展开：{title}（有效叙述约 {body_chars} 字符）")
 
         term_match = TERM_SECTION.search(text)
         if term_match:
