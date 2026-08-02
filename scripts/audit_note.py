@@ -105,6 +105,27 @@ def h1_section(text: str, title_pattern: str) -> str | None:
     return text[match.end():end]
 
 
+def numbered_h2_section(text: str, number: str) -> str | None:
+    match = re.search(rf"^##\s+{re.escape(number)}\s+.*$", text, re.M)
+    if not match:
+        return None
+    next_heading = re.search(r"^#{1,2}\s+", text[match.end():], re.M)
+    end = match.end() + next_heading.start() if next_heading else len(text)
+    return text[match.end():end]
+
+
+def data_table_rows(section: str, columns: int) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in section.splitlines():
+        cells = table_cells(line)
+        if len(cells) != columns or all(TABLE_SEPARATOR_CELL.match(cell) for cell in cells):
+            continue
+        if cells[0] in {"推进节点", "因果箭头", "阶段"}:
+            continue
+        rows.append(cells)
+    return rows
+
+
 def section_spans(text: str, pattern: re.Pattern[str]) -> list[tuple[str, str]]:
     matches = list(pattern.finditer(text))
     result: list[tuple[str, str]] = []
@@ -415,6 +436,51 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
                     warnings.append(f"重点名词“在本文中的作用”过短：{term}")
         else:
             warnings.append("未识别到重点名词模块")
+
+        map_section = h1_section(text, r"整篇论证地图")
+        if map_section is None:
+            errors.append("未识别到整篇论证地图章节")
+        else:
+            map_titles = {
+                "2.1 全文工作模型": r"^##\s+2\.1\s+全文工作模型",
+                "2.2 每一步为什么不能被前一步替代": r"^##\s+2\.2\s+每一步为什么不能被前一步替代",
+                "2.3 关键箭头的证据状态": r"^##\s+2\.3\s+关键箭头的证据状态",
+                "2.4 全文阶段导航": r"^##\s+2\.4\s+全文阶段导航",
+            }
+            for label, pattern in map_titles.items():
+                if not re.search(pattern, map_section, re.M):
+                    errors.append(f"整篇论证地图缺少固定模块：{label}")
+
+            map_22 = numbered_h2_section(map_section, "2.2") or ""
+            map_23 = numbered_h2_section(map_section, "2.3") or ""
+            map_24 = numbered_h2_section(map_section, "2.4") or ""
+            rows_22 = data_table_rows(map_22, 5)
+            rows_23 = data_table_rows(map_23, 5)
+            rows_24 = data_table_rows(map_24, 6)
+            stage_count = len(section_spans(text, STAGE_HEADING))
+            if stage_count >= 3 and len(rows_22) < 3:
+                errors.append(f"论证地图2.2深度不足：仅 {len(rows_22)} 个有效推进节点")
+            if stage_count >= 3 and len(rows_23) < 3:
+                errors.append(f"论证地图2.3深度不足：仅 {len(rows_23)} 个关键箭头")
+            if stage_count and len(rows_24) != stage_count:
+                errors.append(f"论证地图2.4未覆盖全部阶段：导航 {len(rows_24)} 行，阶段主体 {stage_count} 个")
+            vague_map = re.compile(r"^(?:进一步验证|继续探究|机制不明|未知|待验证|同上|无)$")
+            for section_no, rows in (("2.2", rows_22), ("2.3", rows_23), ("2.4", rows_24)):
+                for row_index, cells in enumerate(rows, 1):
+                    for col_index, cell in enumerate(cells, 1):
+                        compact = re.sub(r"\s+", "", cell)
+                        if section_no == "2.2":
+                            too_thin = len(compact) < 4 or vague_map.match(compact)
+                        elif section_no == "2.3":
+                            minimum = (4, 6, 2, 6, 2)[col_index - 1]
+                            too_thin = len(compact) < minimum or (col_index == 4 and vague_map.match(compact))
+                        else:
+                            minimum = (1, 6, 4, 4, 4, 4)[col_index - 1]
+                            too_thin = len(compact) < minimum or (col_index > 1 and vague_map.match(compact))
+                        if too_thin:
+                            errors.append(
+                                f"论证地图{section_no}表格信息过薄：第{row_index}行第{col_index}列“{cell}”"
+                            )
 
         competition = h1_section(text, r"竞争性?解释|双向压力测试|压力测试")
         if competition is None:
