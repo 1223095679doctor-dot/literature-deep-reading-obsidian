@@ -32,7 +32,7 @@ NUMBER_SIGNAL = re.compile(
     r"\d+(?:\.\d+)?\s*(?:mg|μg|ug|ng|mL|μL|h|小时|天|周|倍|mm|cm|μm|nm))"
 )
 FIGURE_READING_HEADER = re.compile(
-    r"面板\s*\|\s*"
+    r"面板\s*\|\s*作者图注（中文）\s*\|\s*"
     r"(?:图中具体展示什么|技术与图中内容|对象与读出|颜色与标记对象)\s*\|\s*"
     r"(?:这张图应该怎么看|看什么特征|关键比较|区域和组别)\s*\|\s*"
     r"(?:关键变化或数值|实际结果|可见变化)\s*\|\s*"
@@ -378,7 +378,7 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
         evidence_tables = len(FIGURE_READING_HEADER.findall(text))
         takehomes = len(re.findall(r"take[- ]?home|真正的?\s*take-home|真正结论", text, re.I))
         if data_figures and evidence_tables < data_figures:
-            errors.append(f"数据 Figure 链接 {data_figures} 个，但逐面板五列读图导航表仅识别到 {evidence_tables} 个")
+            errors.append(f"数据 Figure 链接 {data_figures} 个，但逐面板六列读图导航表仅识别到 {evidence_tables} 个")
         if data_figures and takehomes < data_figures:
             warnings.append(f"数据 Figure 链接 {data_figures} 个，但 take-home 标记仅识别到 {takehomes} 个")
 
@@ -389,7 +389,7 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
             block = text[match.end():end]
             if re.match(r"Figure\s+S?\d+", name, re.I):
                 if not FIGURE_READING_HEADER.search(block):
-                    errors.append(f"Figure 缺少逐面板五列读图导航表：{name}")
+                    errors.append(f"Figure 缺少含作者中文图注的逐面板六列读图导航表：{name}")
                 if not re.search(r"take[- ]?home|真正结论", block, re.I):
                     errors.append(f"Figure 缺少独立 take-home message：{name}")
 
