@@ -31,8 +31,12 @@ NUMBER_SIGNAL = re.compile(
     r"(?:\bn\s*[=＝]\s*\d+|\d+(?:\.\d+)?\s*%|[Pp]\s*[<=>≤≥]\s*0?\.\d+|"
     r"\d+(?:\.\d+)?\s*(?:mg|μg|ug|ng|mL|μL|h|小时|天|周|倍|mm|cm|μm|nm))"
 )
-COMPREHENSIVE_FIGURE_HEADER = re.compile(
-    r"面板\s*\|\s*基本图注与图中内容\s*\|\s*实验对象、组别与条件\s*\|\s*最直接观察\s*\|\s*在故事中的任务\s*\|\s*可以支持\s*\|\s*不能单独支持"
+FIGURE_READING_HEADER = re.compile(
+    r"面板\s*\|\s*"
+    r"(?:图中具体展示什么|技术与图中内容|对象与读出|颜色与标记对象)\s*\|\s*"
+    r"(?:这张图应该怎么看|看什么特征|关键比较|区域和组别)\s*\|\s*"
+    r"(?:关键变化或数值|实际结果|可见变化)\s*\|\s*"
+    r"(?:读图结论与易误读边界|结构判断与局限|生物学含义与边界|量化要求与取景偏倚)"
 )
 BARE_CALLOUT = re.compile(r"^\s*\[!(?:note|abstract|question|info|tip|warning|success|example|danger)\]", re.M | re.I)
 TABLE_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
@@ -48,6 +52,14 @@ META_STAGE_CLICHES = (
 )
 FIGURE_FILLER = re.compile(
     r"见图及图注|见原图(?:及图注)?|本行按对应面板读取|详见(?:原文|论文|图注)|如图所示|\|\s*同上\s*\|",
+    re.I,
+)
+GENERIC_FIGURE_FILLER = re.compile(
+    r"论文相应(?:材料|对象|细菌|细胞|动物|组别)|"
+    r"按作者报告方向分离|"
+    r"提供空间或形态证据|"
+    r"支持组间存在(?:图像层面的)?(?:表型)?差异|"
+    r"不能(?:单独)?证明(?:上游靶点必要性或)?完整机制链",
     re.I,
 )
 PANEL_GROUP = re.compile(r"^(?:[A-Za-z]\d?)\s*(?:[–—-]|/|、|,|，|及)\s*(?:[A-Za-z]\d?)", re.I)
@@ -215,6 +227,10 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
         if filler_matches:
             examples = sorted({match.group(0) for match in filler_matches})[:4]
             errors.append(f"逐图/正文含无信息占位 {len(filler_matches)} 处：{'、'.join(examples)}")
+        generic_figure_fillers = list(GENERIC_FIGURE_FILLER.finditer(text))
+        if generic_figure_fillers:
+            examples = sorted({match.group(0) for match in generic_figure_fillers})[:4]
+            errors.append(f"逐图表含跨面板通用套话 {len(generic_figure_fillers)} 处：{'、'.join(examples)}")
 
         if BARE_CALLOUT.search(text):
             for match in BARE_CALLOUT.finditer(text):
@@ -359,10 +375,10 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
                     warnings.append(f"Figure 文件未在笔记中引用：{name}")
 
         data_figures = len(re.findall(r"!\[\[Figure/Figure\s+S?\d+[^\]]*\]\]", text, re.I))
-        evidence_tables = len(COMPREHENSIVE_FIGURE_HEADER.findall(text))
+        evidence_tables = len(FIGURE_READING_HEADER.findall(text))
         takehomes = len(re.findall(r"take[- ]?home|真正的?\s*take-home|真正结论", text, re.I))
         if data_figures and evidence_tables < data_figures:
-            errors.append(f"数据 Figure 链接 {data_figures} 个，但逐面板完整分析表仅识别到 {evidence_tables} 个")
+            errors.append(f"数据 Figure 链接 {data_figures} 个，但逐面板五列读图导航表仅识别到 {evidence_tables} 个")
         if data_figures and takehomes < data_figures:
             warnings.append(f"数据 Figure 链接 {data_figures} 个，但 take-home 标记仅识别到 {takehomes} 个")
 
@@ -372,8 +388,8 @@ def audit(root: Path) -> tuple[list[str], list[str]]:
             end = image_matches[index + 1].start() if index + 1 < len(image_matches) else len(text)
             block = text[match.end():end]
             if re.match(r"Figure\s+S?\d+", name, re.I):
-                if not COMPREHENSIVE_FIGURE_HEADER.search(block):
-                    errors.append(f"Figure 缺少逐面板完整分析表：{name}")
+                if not FIGURE_READING_HEADER.search(block):
+                    errors.append(f"Figure 缺少逐面板五列读图导航表：{name}")
                 if not re.search(r"take[- ]?home|真正结论", block, re.I):
                     errors.append(f"Figure 缺少独立 take-home message：{name}")
 
