@@ -17,7 +17,9 @@ import sys
 
 
 NOTE_NAME = "设计思路与证据审查.md"
+TRANSFER_NAME = "课题复现与迁移模板.md"
 REQUIRED_DIRS = ("Figure", "Source")
+REQUIRED_SOURCE_PDFS = ("正文.pdf", "补充材料.pdf")
 TEMP_NAME = re.compile(
     r"(?:ocr|render|contact.?sheet|cache|ledger|台账|日志|\.log$|\.tmp$|__pycache__)",
     re.I,
@@ -123,7 +125,7 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
     if not root.name.startswith(current_prefix):
         errors.append(f"文件夹日期不是当前本地日期：应以 {current_prefix} 开头")
 
-    allowed = {NOTE_NAME, *REQUIRED_DIRS}
+    allowed = {NOTE_NAME, TRANSFER_NAME, *REQUIRED_DIRS}
     extras = sorted(p.name for p in root.iterdir() if p.name not in allowed)
     if extras:
         errors.append("最终目录含额外项目：" + ", ".join(extras))
@@ -135,6 +137,38 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
     for item in root.rglob("*"):
         if TEMP_NAME.search(item.name):
             errors.append(f"发现临时/禁止文件：{item.relative_to(root)}")
+
+    transfer = root / TRANSFER_NAME
+    if not transfer.is_file():
+        errors.append(f"缺少第二份交付：{TRANSFER_NAME}")
+    else:
+        try:
+            transfer_text = transfer.read_text(encoding="utf-8")
+            if not transfer_text.strip():
+                errors.append(f"第二份交付为空：{TRANSFER_NAME}")
+            if PLACEHOLDER.search(transfer_text):
+                errors.append("课题复现与迁移模板仍含占位符/TODO")
+            required_transfer_callouts = {
+                "问题": r"^>\s*\[!question\]\s*问题\s*$",
+                "方法设计": r"^>\s*\[!example\]\s*方法设计\s*$",
+                "实际结果": r"^>\s*\[!success\]\s*(?:实际)?结果\s*$",
+                "意义": r"^>\s*\[!important\]\s*意义\s*$",
+                "下一问题": r"^>\s*\[!question\]\s*下一问题\s*$",
+            }
+            missing_transfer_callouts = [
+                label
+                for label, pattern in required_transfer_callouts.items()
+                if not re.search(pattern, transfer_text, re.M)
+            ]
+            if missing_transfer_callouts:
+                errors.append(
+                    "课题复现与迁移模板缺少规定Callout："
+                    + "、".join(missing_transfer_callouts)
+                )
+            if not re.search(r"基础地图|复现前.*(?:概念|认识|了解)", transfer_text):
+                errors.append("课题复现与迁移模板缺少可独立阅读的复现前基础地图")
+        except UnicodeDecodeError:
+            errors.append("课题复现与迁移模板不是有效 UTF-8")
 
     note = root / NOTE_NAME
     text = ""
@@ -158,6 +192,18 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
     source_dir = root / "Source"
     if source_dir.is_dir() and not any(p.is_file() for p in source_dir.iterdir()):
         errors.append("Source/ 为空")
+    if source_dir.is_dir():
+        source_names = {p.name for p in source_dir.iterdir() if p.is_file()}
+        for required_source in REQUIRED_SOURCE_PDFS:
+            if required_source not in source_names:
+                errors.append(f"Source/ 缺少标准命名文件：{required_source}")
+        obsolete_source_names = {"原文.pdf", "main.pdf", "supp.pdf", "supplement.pdf"}
+        found_obsolete = sorted(source_names & obsolete_source_names)
+        if found_obsolete:
+            errors.append(
+                "Source/ 仍使用非标准正文/补充材料文件名："
+                + "、".join(found_obsolete)
+            )
 
     if text and figure_dir.is_dir():
         linked = WIKILINK.findall(text) + MARKDOWN_IMAGE.findall(text)
@@ -283,16 +329,16 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
         # majority are extremely short the promised per-Figure teaching gate
         # plainly did not happen.
         panel_lengths = [
-            len(re.sub(r"\s+|^>\s?", "", match.group("body"), flags=re.M))
+            len(re.findall(r"[\u4e00-\u9fff]", match.group("body")))
             for match in PANEL_BLOCK.finditer(text)
         ]
         if len(panel_lengths) >= 20:
-            short = sum(length < 180 for length in panel_lengths)
+            short = sum(length < 400 for length in panel_lengths)
             ordered = sorted(panel_lengths)
             median = ordered[len(ordered) // 2]
             if short / len(panel_lengths) >= 0.70:
                 errors.append(
-                    f"逐子图讲解篇幅分布异常：{short}/{len(panel_lengths)} 个面板少于180个非空白字符，"
+                    f"逐子图讲解篇幅分布异常：{short}/{len(panel_lengths)} 个面板少于400个中文字符（尚未扣除无效内容），"
                     f"中位数约{median}；大多数面板被系统性压成高级图注，阻断交付"
                 )
 
