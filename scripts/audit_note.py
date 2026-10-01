@@ -39,6 +39,7 @@ BARE_CALLOUT = re.compile(
     r"^\s*\[!(?:note|abstract|question|info|tip|warning|success|example|danger)\]",
     re.I | re.M,
 )
+CALLOUT_HEADER = re.compile(r"^>\s*\[![^\]]+\]")
 FIGURE_KEY = re.compile(r"^(Figure\s+S?\d+)", re.I)
 FIXED_LABEL = re.compile(
     r"\*\*(?:前一步缺口|作者为什么做|为什么做|作者怎么做|怎么做|双向预期|预期|图上是什么|怎么看|实际结果|数字怎么理解|作者如何解释|能说明/不能说明)[:：]\**"
@@ -85,6 +86,24 @@ def table_errors(lines: list[str]) -> list[str]:
                 issues.append(f"第 {j + 1} 行表格列数不一致")
             j += 1
     return issues
+
+
+def callout_separation_errors(lines: list[str], file_label: str) -> list[str]:
+    """Require each Callout to start after a truly empty physical line."""
+    bad_lines: list[int] = []
+    for index, line in enumerate(lines):
+        if not CALLOUT_HEADER.match(line):
+            continue
+        if index > 0 and lines[index - 1] != "":
+            bad_lines.append(index + 1)
+    if not bad_lines:
+        return []
+    preview = "、".join(str(line) for line in bad_lines[:20])
+    suffix = "" if len(bad_lines) <= 20 else f"等（共 {len(bad_lines)} 处）"
+    return [
+        f"{file_label}相邻 Callout 未用完全空行分隔：第 {preview} 行{suffix}；"
+        "Callout 标题前一行不得是 >、空格或正文"
+    ]
 
 
 def repeated_sentence_starters(panel_bodies: list[str]) -> dict[str, int]:
@@ -148,6 +167,11 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
                 errors.append(f"第二份交付为空：{TRANSFER_NAME}")
             if PLACEHOLDER.search(transfer_text):
                 errors.append("课题复现与迁移模板仍含占位符/TODO")
+            errors.extend(
+                callout_separation_errors(
+                    transfer_text.splitlines(), "课题复现与迁移模板"
+                )
+            )
             required_transfer_callouts = {
                 "问题": r"^>\s*\[!question\]\s*问题\s*$",
                 "方法设计": r"^>\s*\[!example\]\s*方法设计\s*$",
@@ -186,6 +210,9 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
         for match in BARE_CALLOUT.finditer(text):
             line_no = text.count("\n", 0, match.start()) + 1
             errors.append(f"裸 Callout 语法（缺少 >）：第 {line_no} 行")
+        errors.extend(
+            callout_separation_errors(text.splitlines(), "核心笔记")
+        )
         errors.extend("Markdown 表格格式错误：" + x for x in table_errors(text.splitlines()))
 
     figure_dir = root / "Figure"
@@ -333,13 +360,19 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
             for match in PANEL_BLOCK.finditer(text)
         ]
         if len(panel_lengths) >= 20:
-            short = sum(length < 400 for length in panel_lengths)
+            short = sum(length < 200 for length in panel_lengths)
+            overlong = sum(length > 650 for length in panel_lengths)
             ordered = sorted(panel_lengths)
             median = ordered[len(ordered) // 2]
             if short / len(panel_lengths) >= 0.70:
                 errors.append(
-                    f"逐子图讲解篇幅分布异常：{short}/{len(panel_lengths)} 个面板少于400个中文字符（尚未扣除无效内容），"
+                    f"逐子图讲解篇幅分布异常：{short}/{len(panel_lengths)} 个面板少于200个中文字符（尚未扣除无效内容），"
                     f"中位数约{median}；大多数面板被系统性压成高级图注，阻断交付"
+                )
+            if advisory and overlong / len(panel_lengths) >= 0.30:
+                notices.append(
+                    f"识别到 {overlong}/{len(panel_lengths)} 个面板超过650个中文字符（尚未扣除无效内容）；"
+                    "请检查是否将重复提醒、统计教程或模块三的批判提前写入普通面板"
                 )
 
     if advisory and text:
