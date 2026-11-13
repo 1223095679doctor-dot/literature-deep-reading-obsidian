@@ -16,8 +16,7 @@ import re
 import sys
 
 
-NOTE_NAME = "设计思路与证据审查.md"
-TRANSFER_NAME = "课题复现与迁移模板.md"
+NOTE_NAME = "作者思路与实验设计带读.md"
 REQUIRED_DIRS = ("Figure", "Source")
 REQUIRED_SOURCE_PDFS = ("正文.pdf", "补充材料.pdf")
 TEMP_NAME = re.compile(
@@ -28,11 +27,11 @@ PLACEHOLDER = re.compile(r"\{\{|\}\}|\bTODO\b|\bTBD\b|待补|占位符", re.I)
 WIKILINK = re.compile(r"!\[\[Figure/([^\]]+)\]\]")
 MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\((?:\./)?Figure/([^\)]+)\)")
 PANEL_CALLOUT = re.compile(
-    r"^>\s*\[![^\]]+\]\s*(Figure\s+S?\d+\s*[A-Za-z])(?:\s*[｜|:：].*)?$",
+    r"^>\s*\[![^\]]+\]\s*(Figure\s+S?\d+\s*[A-Za-z](?:\s*[–—-]\s*[A-Za-z])?)(?:\s*[｜|:：].*)?$",
     re.I | re.M,
 )
 PANEL_BLOCK = re.compile(
-    r"(?m)^>\s*\[![^\]]+\]\s*Figure\s+S?\d+\s*[A-Za-z].*$\n"
+    r"(?m)^>\s*\[![^\]]+\]\s*Figure\s+S?\d+\s*[A-Za-z](?:\s*[–—-]\s*[A-Za-z])?.*$\n"
     r"(?P<body>(?:^>(?!\s*\[!).*$\n?)*)"
 )
 BARE_CALLOUT = re.compile(
@@ -144,7 +143,7 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
     if not root.name.startswith(current_prefix):
         errors.append(f"文件夹日期不是当前本地日期：应以 {current_prefix} 开头")
 
-    allowed = {NOTE_NAME, TRANSFER_NAME, *REQUIRED_DIRS}
+    allowed = {NOTE_NAME, *REQUIRED_DIRS}
     extras = sorted(p.name for p in root.iterdir() if p.name not in allowed)
     if extras:
         errors.append("最终目录含额外项目：" + ", ".join(extras))
@@ -157,52 +156,15 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
         if TEMP_NAME.search(item.name):
             errors.append(f"发现临时/禁止文件：{item.relative_to(root)}")
 
-    transfer = root / TRANSFER_NAME
-    if not transfer.is_file():
-        errors.append(f"缺少第二份交付：{TRANSFER_NAME}")
-    else:
-        try:
-            transfer_text = transfer.read_text(encoding="utf-8")
-            if not transfer_text.strip():
-                errors.append(f"第二份交付为空：{TRANSFER_NAME}")
-            if PLACEHOLDER.search(transfer_text):
-                errors.append("课题复现与迁移模板仍含占位符/TODO")
-            errors.extend(
-                callout_separation_errors(
-                    transfer_text.splitlines(), "课题复现与迁移模板"
-                )
-            )
-            required_transfer_callouts = {
-                "问题": r"^>\s*\[!question\]\s*问题\s*$",
-                "方法设计": r"^>\s*\[!example\]\s*方法设计\s*$",
-                "实际结果": r"^>\s*\[!success\]\s*(?:实际)?结果\s*$",
-                "意义": r"^>\s*\[!important\]\s*意义\s*$",
-                "下一问题": r"^>\s*\[!question\]\s*下一问题\s*$",
-            }
-            missing_transfer_callouts = [
-                label
-                for label, pattern in required_transfer_callouts.items()
-                if not re.search(pattern, transfer_text, re.M)
-            ]
-            if missing_transfer_callouts:
-                errors.append(
-                    "课题复现与迁移模板缺少规定Callout："
-                    + "、".join(missing_transfer_callouts)
-                )
-            if not re.search(r"基础地图|复现前.*(?:概念|认识|了解)", transfer_text):
-                errors.append("课题复现与迁移模板缺少可独立阅读的复现前基础地图")
-        except UnicodeDecodeError:
-            errors.append("课题复现与迁移模板不是有效 UTF-8")
-
     note = root / NOTE_NAME
     text = ""
     if not note.is_file():
-        errors.append(f"缺少核心笔记：{NOTE_NAME}")
+        errors.append(f"缺少主笔记：{NOTE_NAME}")
     else:
         try:
             text = note.read_text(encoding="utf-8")
         except UnicodeDecodeError:
-            errors.append("核心笔记不是有效 UTF-8")
+            errors.append("主笔记不是有效 UTF-8")
         if text and not text.startswith("---\n"):
             errors.append("YAML frontmatter 不是文件首行")
         if PLACEHOLDER.search(text):
@@ -211,9 +173,17 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
             line_no = text.count("\n", 0, match.start()) + 1
             errors.append(f"裸 Callout 语法（缺少 >）：第 {line_no} 行")
         errors.extend(
-            callout_separation_errors(text.splitlines(), "核心笔记")
+            callout_separation_errors(text.splitlines(), "主笔记")
         )
         errors.extend("Markdown 表格格式错误：" + x for x in table_errors(text.splitlines()))
+        if text and not re.search(r"读前地图|阅读地图|研究地图", text):
+            errors.append("主笔记缺少读前地图")
+        if text and not re.search(r"Figure\s+S?\d+|Scheme\s*\d*", text, re.I):
+            errors.append("主笔记缺少逐Figure/Scheme主体")
+        if text and not re.search(r"全文收束|证据边界|证据强度", text):
+            errors.append("主笔记缺少全文证据收束")
+        if text and not re.search(r"迁移|复现|停止条件|转向条件", text):
+            errors.append("主笔记缺少复现或迁移收束")
 
     figure_dir = root / "Figure"
     source_dir = root / "Source"
@@ -283,15 +253,12 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
                     "完整图注翻译不能替代逐图教学，请按实验单元和面板负荷返工"
                 )
 
-        module_two_match = re.search(
-            r"(?ms)^#\s*模块二\b(?P<body>.*?)(?=^#\s*模块三\b|\Z)", text
-        )
-        module_two = module_two_match.group("body") if module_two_match else text
-        obsolete = OBSOLETE_STAGE.findall(module_two)
+        figure_body = text
+        obsolete = OBSOLETE_STAGE.findall(figure_body)
         if len(obsolete) >= 2:
             errors.append(
-                f"模块二恢复旧阶段结构：识别到 {len(obsolete)} 个阶段正文/导航标题；"
-                "模块二应直接以 Figure 实验单元讲述，不得叠加第二套阶段叙事"
+                f"逐Figure主体恢复旧阶段结构：识别到 {len(obsolete)} 个阶段正文/导航标题；"
+                "主笔记应直接以 Figure 实验单元讲述，不得叠加第二套固定阶段叙事"
             )
 
         panel_count = len(panel_bodies)
@@ -341,9 +308,9 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
                 )
 
         wrapper_counts = {
-            "读图前补课": module_two.count("读图前补课"),
-            "看完Figure": module_two.count("看完Figure"),
-            "Take-home message": module_two.count("Take-home message"),
+            "读图前补课": figure_body.count("读图前补课"),
+            "看完Figure": figure_body.count("看完Figure"),
+            "Take-home message": figure_body.count("Take-home message"),
         }
         if all(count >= 3 for count in wrapper_counts.values()):
             errors.append(
@@ -372,7 +339,7 @@ def audit(root: Path, advisory: bool) -> tuple[list[str], list[str]]:
             if advisory and overlong / len(panel_lengths) >= 0.30:
                 notices.append(
                     f"识别到 {overlong}/{len(panel_lengths)} 个面板超过650个中文字符（尚未扣除无效内容）；"
-                    "请检查是否将重复提醒、统计教程或模块三的批判提前写入普通面板"
+                    "请检查是否将重复提醒、统计教程或全文收束中的系统性批判提前写入普通面板"
                 )
 
     if advisory and text:
